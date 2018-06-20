@@ -294,6 +294,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         shutil.copyfile(filename, 'model_best.pth.tar')
 
 def stochastic_weight_decay(model, optimizer):
+	''' Applies stochastic weight decay. '''
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     include_in_regularized = np.random.randint(2, size=n_params)
@@ -313,6 +314,8 @@ def stochastic_weight_decay(model, optimizer):
     return optimizer
 
 def plot_accuracies(train_top1, train_top5, val_top1, val_top5, SWD):
+	''' Plots the top-1/5 accuracy for each epoch in the training and validation sets '''
+
     plt.figure()
 
     epochs = range(len(train_top1))
