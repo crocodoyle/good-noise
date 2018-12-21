@@ -2,12 +2,14 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import mne
-from mne.io import read_raw_edf
+from mne.io import read_raw_edf, read_raw_eeglab
 from mne import Epochs, pick_types, find_events
 from mne.viz.topomap import plot_psds_topomap, plot_topomap
 from mne.viz import plot_ica_components
-from mne.time_frequency import psd_multitaper, psd_welch
+from mne.time_frequency import psd_multitaper, psd_welch, csd_multitaper
 from scipy.signal import welch, lfilter, filtfilt
+from mne.connectivity import spectral_connectivity
+
 
 from mne.io import set_bipolar_reference
 from mne.parallel import parallel_func
@@ -51,7 +53,7 @@ preproc_types = ['filtered', 'amplified']
 
 channels_file = 'Glasgow_BioSemi_132.ced'
 
-data_dir = '/home/users/adoyle/data/'
+data_dir = '/data1/users/adoyle/eeg_test_retest/'
 
 n_channels = 132
 channel_names = channel_names[0:n_channels]
@@ -228,16 +230,87 @@ def convert_epochs_float32(epochs):
 
     return new_epochs
 
+def plot_connectivity(epochs, participant, session_name, type, condition):
+
+    fs = epochs.info['sfreq']
+
+    con, freqs, times, n_epochs, n_tapers = spectral_connectivity(epochs, method=['wpli2_debiased'], mode='multitaper', sfreq=fs, fmin=4, fmax=128, faverage=True, mt_adaptive=False, n_jobs=7, verbose=0)
+    con = con[0:128, 0:128, 0]
+
+    from mayavi import mlab
+
+    mfig = mlab.figure(size=(600, 600), bgcolor=(0.5, 0.5, 0.5))
+    mfig.scene.disable_render = True
+
+    # Plot the sensor locations
+    sens_loc = epochs.info['chs'][0:128]
+    sens_loc = [[x['loc'][0], x['loc'][1], x['loc'][2]] for x in sens_loc]
+    sens_loc = np.array(sens_loc)
+
+    pts = mlab.points3d(sens_loc[:, 0], sens_loc[:, 1], sens_loc[:, 2], color=(1, 1, 1), opacity=1, scale_factor=0.025)
+
+    # Get the strongest connections
+    n_con = 30  # show up to 20 connections
+    min_dist = 0.05  # exclude sensors that are less than 5cm apart
+    threshold = np.sort(con, axis=None)[-n_con]
+    ii, jj = np.where(con >= threshold)
+
+    # Remove close connections
+    from scipy import linalg
+    con_nodes = list()
+    con_val = list()
+    for i, j in zip(ii, jj):
+        if linalg.norm(sens_loc[i] - sens_loc[j]) > min_dist:
+            con_nodes.append((i, j))
+            con_val.append(con[i, j])
+
+    con_val = np.array(con_val)
+
+    # Show the connections as tubes between sensors
+    vmax = 0.6
+    vmin = 0.2
+    for val, nodes in zip(con_val, con_nodes):
+        x1, y1, z1 = sens_loc[nodes[0]]
+        x2, y2, z2 = sens_loc[nodes[1]]
+        points = mlab.plot3d([x1, x2], [y1, y2], [z1, z2], [val, val], vmin=vmin, vmax=vmax, tube_radius=0.01, colormap='Spectral')
+        points.module_manager.scalar_lut_manager.reverse_lut = True
+
+    mlab.scalarbar(points, title=None, nb_labels=4, orientation='vertical')
+
+    # Add the sensor names for the connections shown
+    nodes_shown = list(set([n[0] for n in con_nodes] + [n[1] for n in con_nodes]))
+
+    for node in nodes_shown:
+        point = sens_loc[node]
+        mlab.text3d(point[0], point[1], point[2], channel_names[node], scale=0.05, color=(0, 0, 0))
+
+    mfig.scene.disable_render = False
+    view = (-88, 40.8)
+    mlab.view(*view)
+    mlab.savefig(data_dir + '/results/' + participant + session_name + '_' + type + '_' + condition + '_connectivity.png')
+    mlab.close()
+
 
 def save_epochs_as(eeg, preproc_type, events, reject, participant, session_name):
     face_epochs = Epochs(eeg, events, [11, 21, 31, 41, 51, 61, 71, 81, 91, 101, 111], tmin=-0.3, tmax=1,
                              picks=list(range(132)), proj=True, reject=reject, detrend=1, preload=False, verbose=0).drop_bad()
+
+    # face_csd = csd_multitaper(face_epochs, fmin=0, fmax=128, n_jobs=1)
+    # face_csd_fig = face_csd.plot(mode='coh', show=False)
+    # face_csd_fig.savefig(data_dir + '/results/' + participant + session_name + '_faces_coherence.png')
+    # plt.close(face_csd_fig)
+
     face_epochs = convert_epochs_float32(face_epochs)
     face_epochs.save(data_dir + '/epochs/' + preproc_type + '/faces_' + participant + '_' + session_name + '-epo.fif',
                      verbose=0)
 
     noise_epochs = Epochs(eeg, events, [12, 22, 32, 42, 52, 62, 72, 82, 92, 102, 112], tmin=-0.3, tmax=1,
                               picks=list(range(132)), proj=True, reject=reject, detrend=1, preload=False, verbose=0).drop_bad()
+    # noise_csd = csd_multitaper(noise_epochs, fmin=0, fmax=128, n_jobs=1)
+    # noise_csd_fig = noise_csd.plot(mode='coh', show=False)
+    # noise_csd_fig.savefig(data_dir + '/results/' + participant + session_name + '_noise_coherence.png')
+    # plt.close(noise_csd_fig)
+
     noise_epochs = convert_epochs_float32(noise_epochs)
     noise_epochs.save(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session_name + '-epo.fif', verbose=0)
 
@@ -247,8 +320,8 @@ def plot_evoked(face_epochs, noise_epochs, evoked_ax, session_idx):
     face_evoked = face_epochs[0:128].average()
     noise_evoked = noise_epochs[0:128].average()
 
-    face_evoked.plot(spatial_colors=True, time_unit='s', gfp=True, axes=evoked_ax[session_idx][0], window_title=None, selectable=False, show=False)
-    noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=True, axes=evoked_ax[session_idx][1], window_title=None, selectable=False, show=False)
+    face_evoked.plot(spatial_colors=True, time_unit='s', gfp=True, axes=evoked_ax[session_idx][0], window_title='', selectable=False, show=False)
+    noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=True, axes=evoked_ax[session_idx][1], window_title='', selectable=False, show=False)
 
     evoked_difference = face_evoked.data - noise_evoked.data
     evoked_diff = face_evoked.copy()
@@ -262,46 +335,64 @@ def plot_amplifier(filter_coeffs, amplitudes, sfreq, ideal_gains, fooof):
     import matplotlib.pyplot as plt
 
     sfreq = float(sfreq)
+    n_points = len(ideal_gains[0])
 
-    f = np.linspace(0, sfreq/2, 1000)
-    omega = np.linspace(0, np.pi, 1000)
+    # f = np.linspace(0, sfreq/2, n_points)
+    # logfreqs = np.logspace(-2, 0, n_points, endpoint=True, base=10)
 
     title = 'Neural Power Amplifier'
 
     fig, (ax_filter) = plt.subplots(1, 3, figsize=(24, 6))
-    total_mag = np.zeros(omega.shape)
+    total_mag = np.zeros(n_points)
 
     for idx, (coeffs, amplitude) in enumerate(zip(filter_coeffs, amplitudes)):
-        w, H = freqz(coeffs[0], coeffs[1], worN=omega, whole=True)
+        w, h = freqz(coeffs[0], coeffs[1], worN=n_points)
+
         freqs = w * sfreq / (2*np.pi)
 
-        mag = np.maximum((H * H.conj()).real, 1e-20)
+        mag = np.maximum(np.abs(h), 1e-20)
 
-        total_mag += mag * amplitude
+        if idx > 0:
+            npa = 11
+        else:
+            npa = 1
+
+        total_mag += (mag * amplitude * npa)
+
         ax_filter[1].plot(freqs, mag*amplitude, 'b', linewidth=2, zorder=4)
 
     total_mag = 10 * np.log10(total_mag) # to dB
 
-    ideal_mag = np.zeros(1000)
+    ideal_mag = np.zeros(n_points)
 
-    for gain, amplitude in zip(ideal_gains, amplitudes):
-        ideal_mag += gain * amplitude
-        ax_filter[1].plot(f, gain*amplitude, color='r', linestyle='dashed', linewidth=2, zorder=3)
+    for idx, (gain, amplitude) in enumerate(zip(ideal_gains, amplitudes)):
+        if idx > 0:
+            npa = 11
+        else:
+            npa = 1
+
+        ideal_mag += (np.abs(gain) * amplitude * npa)
+        ax_filter[1].plot(freqs, np.maximum(gain*amplitude, 1e-20), color='r', linestyle='dashed', linewidth=2, zorder=3)
 
     ideal_mag = 10*np.log10(ideal_mag)
 
-    print('freqs for actual:', np.max(freqs))
-    print('freqs for ideal:', np.max(freqs), ideal_mag.shape)
-    # print(f)
-    # print(freqs)
+    ax_filter[2].plot(freqs, total_mag, color='b', linewidth=2, zorder=4, label='Actual Filter Response')
+    ax_filter[2].plot(freqs, ideal_mag, color='r', linestyle='dashed', linewidth=2, zorder=4, label='Ideal Filter Response')
 
-    ax_filter[2].plot(freqs, total_mag, color='b', linewidth=2, zorder=4, label='Actual')
-    ax_filter[2].plot(f, ideal_mag, color='r', linestyle='dashed', linewidth=2, zorder=4, label='Ideal')
+    ax_filter[2].legend(loc="lower right", fontsize=16, shadow=True, fancybox=True)
 
-    ax_filter[1].set(xlim=[0, 40], ylim=[0, 2], ylabel='Gain (V/V)', xlabel='Frequency (Hz)', title='Individual Filters')
-    ax_filter[2].set(xlim=[0, 40], ylim=[-20, 5], ylabel='Total Magnitude (dB)', xlabel='Frequency (Hz)', title=title)
+    ax_filter[1].set(xlim=[0, 40], ylabel='Gain (V/V)', xlabel='Frequency (Hz)', title='Individual Filters')
+    ax_filter[2].set(xlim=[0, 40], ylim=[-20, 10], ylabel='Total Magnitude (dB)', xlabel='Frequency (Hz)', title=title)
 
     fooof.plot(plt_log=False, save_fig=False, ax=ax_filter[0])
+
+    ax_filter[0].set_xlabel('Frequency (Hz)', fontsize=16)
+    ax_filter[1].set_xlabel('Frequency (Hz)', fontsize=16)
+    ax_filter[2].set_xlabel('Frequency (Hz)', fontsize=16)
+
+    ax_filter[0].set_title('FOOOF Spectrum', fontsize=20)
+    ax_filter[1].set_title('Individual Filter Response', fontsize=20)
+    ax_filter[2].set_title('Neural Power Amplifier Response', fontsize=20)
 
     # plt.legend(shadow=True, fancybox=True)
     plt.tight_layout()
@@ -309,11 +400,13 @@ def plot_amplifier(filter_coeffs, amplitudes, sfreq, ideal_gains, fooof):
     return fig
 
 
-def preprocess():
+def preprocess(args):
     f_high = 128
     f_low = 1
 
-    number_bad_channels = []
+    save_epochs = args.save_epochs
+
+    # number_bad_channels = []
 
     montage = load_montage()
     montage_fig = montage.plot(scale_factor=20, show_names=True, kind='topomap', show=False)
@@ -321,9 +414,10 @@ def preprocess():
     plt.close(montage_fig)
     montage_fig2 = montage.plot(scale_factor=20, show_names=True, kind='3d', show=False)
     montage_fig2.savefig(data_dir + '/results/montagefig_3D.png', dpi=500)
+    plt.close(montage_fig2)
 
-    fooof_fig, fooof_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=True, squeeze=False, figsize=(24, 40))
-    power_fig, power_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=True, squeeze=False, figsize=(24, 40))
+    fooof_fig, fooof_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 40))
+    # power_fig, power_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 40))
     # topo_fig, topo_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=True, squeeze=False, figsize=(24, 40))
 
     r2s = []
@@ -331,42 +425,43 @@ def preprocess():
     for participant_idx, participant in enumerate(participants):
         plt.close()
 
-        evoked_fig_filtered, evoked_ax_filtered = plt.subplots(nrows=10, ncols=3, sharex=True, sharey=True, squeeze=False, figsize=(10, 40))
-        evoked_fig_amplified, evoked_ax_amplified = plt.subplots(nrows=10, ncols=3, sharex=True, sharey=True, squeeze=False, figsize=(10, 40))
-
+        evoked_fig_filtered, evoked_ax_filtered = plt.subplots(nrows=10, ncols=3, sharex=True, sharey=False, squeeze=False, figsize=(10, 40))
+        evoked_fig_amplified, evoked_ax_amplified = plt.subplots(nrows=10, ncols=3, sharex=True, sharey=False, squeeze=False, figsize=(10, 40))
 
         for session_idx, session_name in enumerate(sessions):
             print('Participant', participant_idx + 1, '/', len(participants), 'session', session_idx + 1, '/', len(sessions))
 
-            filename = data_dir + participant + '/' + participant + session_name + '.bdf'
+            filename = data_dir + '/cleaned/' + participant + '/' + participant + session_name + '.set'
 
-            eeg = read_raw_edf(filename, montage=montage, eog=eog_channels, preload=True,
-                               exclude=['EXG5', 'EXG6', 'EXG7', 'EXG8'], verbose=0)
+            eeg = read_raw_eeglab(filename, montage=montage, eog=eog_channels, preload=True, verbose=0)
             #         mne.set_eeg_reference(eeg, ref_channels='average', copy=True, projection=False)
 
             events = mne.find_events(eeg, stim_channel='STI 014', verbose=0)
-            reject = dict(eeg=80e-5, eog=60e-4)
+            reject = dict(eeg=80e-5, eog=60e-4)   # manually tuned argh
 
             eeg.pick_channels(channel_names)
 
-            # face_epochs, noise_epochs = save_epochs_as(eeg, 'raw', events, reject, participant, session_name)
-            # plot_evoked(face_epochs, noise_epochs, evoked_axes['raw'], session_idx)
-
             # combine EOG
             # eeg = combine_vertical_eog(eeg)
-            print('Notch Filter')
-            eeg_notch = eeg.copy()
-            eeg_notch.notch_filter(np.arange(50, 128, 50), notch_widths=256/400, n_jobs=7)
+            # print('Notch Filter')
+            # eeg_notch = eeg.copy()
+            # eeg_notch.notch_filter(np.arange(50, 128, 50), notch_widths=256/400, n_jobs=7)
 
             print('Bandpass Filter')
             filter_eeg = eeg.copy()
-            filter_eeg.filter(2, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
+            filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
 
-            print('Saving Epochs')
-            face_epochs, noise_epochs = save_epochs_as(filter_eeg, 'filtered', events, reject, participant, session_name)
-            plot_evoked(face_epochs, noise_epochs, evoked_ax_filtered, session_idx)
-            del(face_epochs)
-            del(noise_epochs)
+            if save_epochs:
+                print('Saving Epochs')
+                face_epochs, noise_epochs = save_epochs_as(filter_eeg, 'filtered', events, reject, participant, session_name)
+                plot_evoked(face_epochs, noise_epochs, evoked_ax_filtered, session_idx)
+
+                if args.connectivity:
+                    plot_connectivity(face_epochs, participant, session_name, 'face', 'filtered')
+                    plot_connectivity(noise_epochs, participant, session_name, 'noise', 'filtered')
+
+                del(face_epochs)
+                del(noise_epochs)
 
             print('ICA')
             eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
@@ -384,21 +479,22 @@ def preprocess():
             # plot_evoked(face_epochs, noise_epochs, evoked_axes['ica'], session_idx)
 
             print('Plot Power')
-            eeg.plot_psd(tmin=100, fmin=0.1, fmax=256, picks=list(range(128)), ax=power_axes[session_idx][participant_idx], area_mode='std', area_alpha=0.33, dB=True, estimate='auto', average=False, show=False, n_jobs=7, spatial_colors=True, verbose=0)
+            # eeg.plot_psd(tmin=100, fmin=0.1, fmax=256, picks=list(range(128)), ax=power_axes[session_idx][participant_idx], area_mode='std', area_alpha=0.33, dB=True, estimate='auto', average=False, show=False, n_jobs=7, spatial_colors=True, verbose=0)
 
             # eeg.pick_channels(channel_names[0:128])
-            # eeg.plot_psd_topo(tmin=100, dB=True, show=False, block=False, n_jobs=1, axes=topo_axes[session_idx][participant_idx], verbose=None)
-            # eeg.pick_channels(channel_names[0:132])
+            # eeg.plot_psd_topo(tmin=100, dB=True, show=False, block=False, n_jobs=1, axes=topo_axes[session_idx][participant_idx], verbose=0)
+            eeg.pick_channels(channel_names[0:132])
 
-            # print('Computing power spectrum for entire session...')
+            print('Computing power spectrum for entire session...')
             start_time = time.time()
-            # psds, freqs = psd_multitaper(eeg, f_low, f_high, n_jobs=1)
-            print('Power Spectrum')
-            psds, freqs = psd_welch(eeg_notch, fmin=f_low, fmax=128, tmin=500, tmax=2000, n_fft=2048, n_overlap=512, n_jobs=7)
-            # print('Took', (time.time() - start_time) // 60, 'mins')
-            del(eeg_notch)
+            psds, freqs = psd_multitaper(eeg, f_low, f_high, n_jobs=7, verbose=0)
+            # print('Power Spectrum')
+            #psds, freqs = psd_welch(eeg, fmin=f_low, fmax=128, tmin=500, tmax=2000, n_fft=2048, n_overlap=512, n_jobs=7)
+            # psds, freqs = psd_multitaper(eeg, fmin=f_low, fmax=f_high, tmin=500, tmax=2000, n_jobs=1, verbose=1)
 
-            # print('Frequencies shape:', freqs.shape, 'Power spectrum distribution shape:', psds.shape)
+            print('Took', (time.time() - start_time) // 60, 'mins')
+
+            print('Frequencies shape:', freqs.shape, 'Power spectrum distribution shape:', psds.shape)
             #
             # channel_rejected_eeg = eeg.copy()
             # channel_rejected_eeg, n_bads = fooof_channel_rejection(channel_rejected_eeg, psds, freqs, f_low, f_high, participant, session_name)
@@ -413,7 +509,7 @@ def preprocess():
 
             print('Fitting FOOOF...')
             start_time = time.time()
-            fooof = FOOOF(min_peak_amplitude=0.05, peak_width_limits=[0.5, 15], background_mode='knee')
+            fooof = FOOOF(min_peak_amplitude=0.05, peak_width_limits=[3, 15], background_mode='knee')
             fooof.fit(freqs, np.mean(psds, axis=0), freq_range=[f_low / 2, 45])
             print('FOOOF fit in', (time.time() - start_time) // 60, 'mins')
             fooof.plot(plt_log=False, save_fig=True, file_name='FOOOF_' + participant + '_' + session_name, file_path=data_dir + '/results/')
@@ -455,10 +551,17 @@ def preprocess():
 
             eeg = mne.io.RawArray(np.float64(amplified_time_series), epoch_info, verbose=0)
 
-            face_epochs, noise_epochs = save_epochs_as(eeg, 'amplified', events, None, participant, session_name)
-            plot_evoked(face_epochs, noise_epochs, evoked_ax_amplified, session_idx)
-            del(face_epochs)
-            del(noise_epochs)
+            if save_epochs:
+                face_epochs, noise_epochs = save_epochs_as(eeg, 'amplified', events, None, participant, session_name)
+                plot_evoked(face_epochs, noise_epochs, evoked_ax_amplified, session_idx)
+
+                if args.connectivity:
+                    plot_connectivity(face_epochs, participant, session_name, 'face', 'amplified')
+                    plot_connectivity(noise_epochs, participant, session_name, 'noise', 'amplified')
+
+
+                del(face_epochs)
+                del(noise_epochs)
 
         evoked_fig_filtered.savefig(data_dir + '/results/evoked_filtered' + participant + '.png', dpi=500, bbox_inches='tight')
         evoked_fig_amplified.savefig(data_dir + '/results/evoked_amplified' + participant + '.png', dpi=500, bbox_inches='tight')
@@ -468,13 +571,23 @@ def preprocess():
         #     evoked_fig.savefig(data_dir + '/results/evoked_' + preproc_type + participant + '.png', dpi=500, bbox_inches='tight')
 
     fooof_fig.savefig(data_dir + '/results/fooofs.png', dpi=500, bbox_inches='tight')
-    power_fig.savefig(data_dir + '/results/power.png', dpi=500, bbox_inches='tight')
+    # power_fig.savefig(data_dir + '/results/power.png', dpi=500, bbox_inches='tight')
 
     print('FOOOF r squared', r2s)
     print(np.mean(r2s))
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Preprocessing to test the Neural Power Amplifier.')
+
+    parser.add_argument('--save-epochs', action='store_true', default=False, help='save epochs')
+    parser.add_argument('--connectivity', action='store_true', default=False, help='compute connectivity using phase lag index')
+
+    args = parser.parse_args()
+
+    print('Arguments for this experiment:')
+    print(args)
+
     start_all = time.time()
-    preprocess()
+    preprocess(args)
     elapsed = time.time() - start_all
     print('Took', elapsed / 60, 'minutes')
