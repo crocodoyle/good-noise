@@ -578,6 +578,8 @@ def preprocess(args):
     print('FOOOF r squared', r2s)
     print(np.mean(r2s))
 
+    print('FOOOF r2 stats:', np.mean(r2s), np.var(r2s))
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Preprocessing to test the Neural Power Amplifier.')
 
