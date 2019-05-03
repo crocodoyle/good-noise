@@ -19,8 +19,6 @@ from sklearn.model_selection import GroupKFold
 
 from sklearn.metrics import accuracy_score
 
-
-
 import itertools, h5py, argparse
 
 
@@ -28,8 +26,7 @@ participants = ['ft10_p1', 'ft10_p2', 'ft10_p3', 'ft10_p4']
 sessions = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']
 channel_names = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A11', 'A12', 'A13', 'A14', 'A15', 'A16', 'A17', 'A18', 'A19', 'A20', 'A21', 'A22', 'A23', 'A24', 'A25', 'A26', 'A27', 'A28', 'A29', 'A30', 'A31', 'A32', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'B10', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17', 'B18', 'B19', 'B20', 'B21', 'B22', 'B23', 'B24', 'B25', 'B26', 'B27', 'B28', 'B29', 'B30', 'B31', 'B32', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C21', 'C22', 'C23', 'C24', 'C25', 'C26', 'C27', 'C28', 'C29', 'C30', 'C31', 'C32', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17', 'D18', 'D19', 'D20', 'D21', 'D22', 'D23', 'D24', 'D25', 'D26', 'D27', 'D28', 'D29', 'D30', 'D31', 'D32', 'EXG1', 'EXG2', 'EXG3', 'EXG4', 'EXG5', 'EXG6', 'EXG7', 'EXG8']
 
-preproc_types = ['amplified', 'filtered', 'highpass', 'raw']
-preproc_names = ['NPA', 'bandpass', 'highpass', 'raw']
+preproc_types = ['NPA', 'Bandpass', 'Highpass', 'Raw']
 
 channels_file = 'Glasgow_BioSemi_132.ced'
 
@@ -39,6 +36,8 @@ n_channels = 128
 n_timepoints = 667
 
 plot_colours = ['blue', 'red', 'green', 'darkorange']
+
+seeds = [1337, 42, 24, 7331]
 
 
 class EEGEpochSequence(Sequence):
@@ -179,9 +178,8 @@ def lstm_model(n_channels, n_timepoints):
 
     model = Model(input=[inputs], output=output)
 
-    optimizer = Adam(lr=0.0002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-
-    # sgd = SGD(lr=0.0002)
+    # optimizer = Adam(lr=0.0002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    optimizer = SGD(lr=0.0002)
 
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
@@ -193,7 +191,7 @@ def train(attention):
     n_folds = len(participants)
     n_preproc_types = len(preproc_types)
 
-    batch_size = 512
+    batch_size = 1024
 
     test_accuracies = np.zeros((n_preproc_types, n_folds), dtype='float32')
     train_accuracies = np.zeros((n_preproc_types, n_folds, n_epochs), dtype='float32')
@@ -207,8 +205,8 @@ def train(attention):
     model.summary()
 
     attention_fig, attention_ax = plt.subplots(1, 1)
-    results_fig, results_ax = plt.subplots(1, 1, figsize=(6, 4))
-    loss_fig, loss_ax = plt.subplots(1, 1, figsize=(6, 4))
+    results_fig, results_ax = plt.subplots(1, n_folds, figsize=(24, 4))
+    loss_fig, loss_ax = plt.subplots(1, n_folds, figsize=(24, 4))
 
     for preproc_idx, preproc_type in enumerate(preproc_types):
         print('Beginning analysis for', preproc_type, 'pre-processing')
@@ -221,10 +219,11 @@ def train(attention):
 
             gkf = GroupKFold(n_splits=n_folds)
             for fold_idx, (train_indices, test_indices) in enumerate(gkf.split(all_indices, labels, participant_nums)):
-                print('Training', preproc_type, 'fold', str(fold_idx))
+                print('Training', preproc_type, 'fold', str(fold_idx+1), '/', str(n_folds))
                 # train_labels = labels[train_indices.tolist()]
                 # test_labels = labels[test_indices.tolist()]
 
+                np.random.seed(seeds[fold_idx])
                 # model = sequential_model(n_channels, n_timepoints)
                 if attention:
                     model = lstm_attention_model(n_channels, n_timepoints)
@@ -284,37 +283,43 @@ def train(attention):
         print('Pre-processing type:', preproc_type, 'train accuracy:', np.mean(train_accuracies[preproc_idx, :, -1]), 'test accuracy:', np.mean(test_accuracies[preproc_idx, :]))
 
         for fold_idx in range(n_folds):
-            print(train_accuracies[preproc_idx, fold_idx, :])
+            # print(train_accuracies[preproc_idx, fold_idx, :])
 
-            if fold_idx == 0:
-                results_ax.plot(train_accuracies[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], label=preproc_names[preproc_idx])
-                loss_ax.plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], label=preproc_names[preproc_idx])
+            # if fold_idx == 0:
+                results_ax[fold_idx].plot(train_accuracies[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], label=preproc_type)
+                loss_ax[fold_idx].plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], label=preproc_type)
                 # results_ax[0].plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], linestyle='--', label=preproc_type)
-            else:
-                results_ax.plot(train_accuracies[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx])
-                loss_ax.plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx])
-                # results_ax[0].plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], linestyle='--')
+            # else:
+            #     results_ax.plot(train_accuracies[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx])
+            #     loss_ax.plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx])
+            #     # results_ax[0].plot(losses[preproc_idx, fold_idx, :], color=plot_colours[preproc_idx], linestyle='--')
 
-    results_ax.legend(loc='center right', shadow=True, fancybox=True)
+                results_ax[fold_idx].legend(loc='center right', shadow=True, fancybox=True)
 
-    results_ax.set_xlabel('Epoch', fontsize=16)
-    results_ax.set_ylabel('Train Accuracy', fontsize=16)
-    results_ax.set_ylim([0.45, 1.05])
+                results_ax[fold_idx].set_xlabel('Epoch', fontsize=16)
+                results_ax[fold_idx].set_ylabel('Train Accuracy', fontsize=16)
+                results_ax[fold_idx].set_ylim([0.45, 1.05])
 
-    loss_ax.legend(shadow=True, fancybox=True)
+                loss_ax[fold_idx].legend(shadow=True, fancybox=True)
 
-    loss_ax.set_xlabel('Epoch', fontsize=16)
-    loss_ax.set_ylabel('Loss', fontsize=16)
-
-    # boxplots = results_ax[1].boxplot(test_accuracies.T, labels=preproc_types, patch_artist=True)
-    # for patch, colour in zip(boxplots['boxes'], plot_colours):
-    #     patch.set_facecolor(colour)
-    #
-    # results_ax[1].set_xlabel('Pre-Processing Method', fontsize=16)
-    # results_ax[1].set_ylabel('Test Accuracy', fontsize=16)
+                loss_ax[fold_idx].set_xlabel('Epoch', fontsize=16)
+                loss_ax[fold_idx].set_ylabel('Loss', fontsize=16)
 
     results_fig.savefig(data_dir + '/results/decoding_results.png', dpi=500, bbox_inches='tight')
     loss_fig.savefig(data_dir + '/results/loss.png', dpi=500, bbox_inches='tight')
+
+
+    test_results_fig, test_results_ax = plt.subplots(1, 1, figsize=(4, 3))
+
+    boxplots = test_results_ax.boxplot(test_accuracies.T, labels=preproc_types, patch_artist=True)
+    for patch, colour in zip(boxplots['boxes'], plot_colours):
+        patch.set_facecolor(colour)
+
+    test_results_ax.set_xlabel('Pre-Processing Method', fontsize=16)
+    test_results_ax.set_ylabel('Test Accuracy', fontsize=16)
+    test_results_ax.grid(b=True, which='both')
+
+    test_results_fig.savefig(data_dir + '/results/test_scores.png', dpi=500, bbox_inches='tight')
 
 if __name__ == '__main__':
     print('Decoding faces vs. noise')

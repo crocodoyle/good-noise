@@ -31,6 +31,10 @@ from fooof.utils import combine_fooofs
 
 import argparse, time, os
 
+from sklearn.metrics import r2_score
+
+colours = ['goldenrod', 'forestgreen', 'navy', 'rebeccapurple']
+
 
 
 participants = ['ft10_p1', 'ft10_p2', 'ft10_p3', 'ft10_p4']
@@ -39,9 +43,7 @@ channel_names = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A
 
 eog_channels = ['EXG1', 'EXG2', 'EXG3', 'EXG4']
 
-# preproc_types = ['raw', 'filtered', 'ica', 'bads2good', 'amplified']
-
-preproc_types = ['filtered', 'amplified', 'raw', 'highpass']
+preproc_types = ['NPA', 'Bandpass', 'Highpass', 'Raw']
 
 channels_file = 'Glasgow_BioSemi_132.ced'
 
@@ -364,16 +366,16 @@ def plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, ga
         approx_error = ideal_log - approx_log
 
         if idx == 0:
-            ax_filter[1].plot(w, mag*amplitude, color='deepskyblue', linewidth=2, zorder=4, label='Stages')
+            ax_filter[1].plot(w, mag*amplitude, color='k', linewidth=2, zorder=4, label='Stages')
         else:
-            ax_filter[1].plot(w, mag*amplitude, color='deepskyblue', linewidth=2, zorder=4)
+            ax_filter[1].plot(w, mag*amplitude, color='k', linewidth=2, zorder=4)
 
-        ax_log_approx[idx].plot(w, ideal_log, linewidth=2, label='Ideal')
-        ax_log_approx[idx].plot(w, stage_approx, linewidth=2, label='Stage')
+        ax_log_approx[idx].plot(w, ideal_log, color='r', linestyle='dashed', linewidth=2, label='Ideal')
+        ax_log_approx[idx].plot(w, stage_approx, color='k', linewidth=2, label='Stage')
 
-        ax_log_approx[idx].plot(w, approx_error, label='Error')
-        if idx > 0:
-            ax_log_approx[idx].plot(w, approx_log, label='Approximation')
+        ax_log_approx[idx].plot(w, approx_error, color='darkorange', linewidth=2, label='Error')
+
+        ax_log_approx[idx].plot(w, approx_log, color='b', linewidth=2, label='Approximation')
 
         ax_log_approx[idx].set_xlabel('Frequency (Hz)', fontsize=16)
         ax_log_approx[idx].set_ylabel('Gain (V/V)', fontsize=16)
@@ -382,10 +384,10 @@ def plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, ga
 
         total_mag += stage_approx
 
-    ax_log_approx[-1].legend(loc="center right", fontsize=16, shadow=True, fancybox=True)
+    ax_log_approx[-1].legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=16, shadow=True, fancybox=True)
 
-    ax_filter[1].plot(w, approx_log, linewidth=2, color='b', label='Total Approx.')
     ax_filter[1].plot(w, ideal_log, linewidth=2, color='r', linestyle='dashed', label='Ideal')
+    ax_filter[1].plot(w, approx_log, linewidth=2, color='b', label='Approx.')
 
     # Gaussian peak approximations
     for idx, (coeffs, amplitude) in enumerate(zip(gaussian_filter_coeffs, gaussian_amplitudes)):
@@ -408,8 +410,9 @@ def plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, ga
 
     ideal_mag_log = 10 * np.log10(ideal_mag) # to dB
 
-    ax_filter[3].plot(w, total_mag_log, color='b', linewidth=2, zorder=4, label='Actual Filter Response')
-    ax_filter[3].plot(w, ideal_mag_log, color='r', linestyle='dashed', linewidth=2, zorder=4, label='Ideal Filter Response')
+    r2 = r2_score(ideal_mag, total_mag)
+    ax_filter[3].plot(w, ideal_mag_log, color='r', linestyle='dashed', linewidth=2, zorder=4, label='Ideal')
+    ax_filter[3].plot(w, total_mag_log, color='b', linewidth=2, zorder=4, label='Actual ($r^2$={0:.2f})'.format(r2))
     # ax_filter[3].plot(w, np.abs(ideal_mag_log - total_mag_log), color='darkorange', linewidth=1, zorder=4, label='Error')
 
     ax_filter[1].legend(fontsize=16, shadow=True, fancybox=True)
@@ -437,13 +440,26 @@ def plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, ga
 
     plt.tight_layout()
 
-    return fig, fig2
+    for ax in ax_filter:
+        for tick in ax.xaxis.get_major_ticks():
+            tick.label.set_fontsize(16)
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(16)
+
+    for ax in ax_log_approx:
+        for tick in ax.xaxis.get_major_ticks():
+            tick.label.set_fontsize(16)
+        for tick in ax.yaxis.get_major_ticks():
+            tick.label.set_fontsize(16)
+
+    return fig, fig2, r2
 
 
 def preprocess(args):
     f_high = 128
     f_low = 1
 
+    blink_removal = not args.no_blink_removal
     save_epochs = args.save_epochs
 
     # number_bad_channels = []
@@ -460,8 +476,10 @@ def preprocess(args):
     # power_fig, power_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 40))
     # topo_fig, topo_axes = plt.subplots(nrows=10, ncols=4, sharex=True, sharey=True, squeeze=False, figsize=(24, 40))
 
-    r2s = []
     all_fooofs = []
+
+    fooof_r2s = np.zeros((n_participants, n_sessions))
+    filter_r2s = np.zeros((n_participants, n_sessions))
 
     for participant_idx, participant in enumerate(participants):
         plt.close()
@@ -484,7 +502,7 @@ def preprocess(args):
 
             if save_epochs:
                 print('Saving Epochs')
-                face_epochs, noise_epochs = save_epochs_as(eeg, 'raw', events, reject, participant, session_name)
+                face_epochs, noise_epochs = save_epochs_as(eeg, 'Raw', events, reject, participant, session_name)
                 # plot_evoked(face_epochs, noise_epochs, evoked_ax_filtered, session_idx)
 
                 if args.connectivity:
@@ -498,26 +516,25 @@ def preprocess(args):
             filter_eeg = eeg.copy()
             filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
 
-            print('ICA')
-            eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
+            if blink_removal:
+                print('ICA')
+                eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
+                eeg.set_eeg_reference('average', projection=True, verbose=0)
+                eeg.apply_proj()
 
-            del(filter_eeg)
-
-            eeg.set_eeg_reference('average', projection=True, verbose=0)
-            eeg.apply_proj()
 
             if save_epochs:
-                print('Bandpass Filter')
-                filter_eeg = eeg.copy()
-                filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)  # band-pass
-
                 print('Saving Epochs')
-                face_epochs, noise_epochs = save_epochs_as(eeg, 'filtered', events, reject, participant, session_name)
+                condition = 'Bandpass'
+                if not blink_removal:
+                    condition = condition + ' (blinks)'
+
+                face_epochs, noise_epochs = save_epochs_as(filter_eeg, condition, events, reject, participant, session_name)
                 # plot_evoked(face_epochs, noise_epochs, evoked_ax_filtered, session_idx)
 
                 if args.connectivity:
-                    plot_connectivity(face_epochs, participant, session_name, 'face', 'filtered')
-                    plot_connectivity(noise_epochs, participant, session_name, 'noise', 'filtered')
+                    plot_connectivity(face_epochs, participant, session_name, 'face', condition)
+                    plot_connectivity(noise_epochs, participant, session_name, 'noise', condition)
 
                 del face_epochs
                 del noise_epochs
@@ -528,13 +545,17 @@ def preprocess(args):
                 filter_eeg = eeg.copy()
                 filter_eeg.filter(1, None, picks=list(range(132)), n_jobs=7, verbose=0)
 
+                condition = 'Highpass'
+                if not blink_removal:
+                    condition = condition + ' (blinks)'
+
                 print('Saving Epochs')
-                face_epochs, noise_epochs = save_epochs_as(eeg, 'highpass', events, reject, participant, session_name)
+                face_epochs, noise_epochs = save_epochs_as(filter_eeg, condition, events, reject, participant, session_name)
                 # plot_evoked(face_epochs, noise_epochs, evoked_ax_filtered, session_idx)
 
                 if args.connectivity:
-                    plot_connectivity(face_epochs, participant, session_name, 'face', 'highpass')
-                    plot_connectivity(noise_epochs, participant, session_name, 'noise', 'highpass')
+                    plot_connectivity(face_epochs, participant, session_name, 'face', condition)
+                    plot_connectivity(noise_epochs, participant, session_name, 'noise', condition)
 
                 del face_epochs
                 del noise_epochs
@@ -573,7 +594,7 @@ def preprocess(args):
             # fooof.plot(plt_log=False, save_fig=True, file_name='FOOOF_' + participant + '_' + session_name, file_path=data_dir + '/results/')
             # fooof.plot(plt_log=False, ax=fooof_axes[session_idx][participant_idx])
 
-            r2s.append(fooof.r_squared_)
+            fooof_r2s[participant_idx][session_idx] = fooof.r_squared_
             all_fooofs.append(fooof)
 
             # amplify time series
@@ -592,7 +613,8 @@ def preprocess(args):
                 # amp_fig.savefig(data_dir + '/results/' + participant + session_name + '_amplifier_' + str(plot_idx) + '.png')
                 plt.close(amp_fig)
 
-            fig, fig2 = plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, gaussian_amplitudes, 512, ideal_gains, fooof, log_offset)
+            fig, fig2, filter_r2 = plot_amplifier(log_filter_coeffs, log_amplitudes, gaussian_filter_coeffs, gaussian_amplitudes, 512, ideal_gains, fooof, log_offset)
+            filter_r2s[participant_idx][session_idx] = filter_r2
 
             # fig3, filter_responses = plt.subplots(1, 2, figsize=(12, 4))
             # amplified_spectra = []
@@ -638,7 +660,12 @@ def preprocess(args):
 
             last_subfig.set_ylabel('Power', fontsize=16)
             last_subfig.set_xlabel('Frequency (Hz)', fontsize=16)
-            last_subfig.set_title('Normalized Power Spectrum', fontsize=20)
+            last_subfig.set_title('Normalized\nPower Spectrum', fontsize=20)
+
+            for tick in last_subfig.xaxis.get_major_ticks():
+                tick.label.set_fontsize(16)
+            for tick in last_subfig.yaxis.get_major_ticks():
+                tick.label.set_fontsize(16)
 
             fig.savefig(data_dir + '/results/' + participant + session_name + '_amplifier.png', dpi=500, bbox_inches='tight')
             fig2.savefig(data_dir + '/results/' + participant + session_name + '_log_approx.png', dpi=500, bbox_inches='tight')
@@ -646,12 +673,17 @@ def preprocess(args):
             plt.close(fig2)
 
             if save_epochs:
-                face_epochs, noise_epochs = save_epochs_as(eeg, 'amplified', events, None, participant, session_name)
+                print('Saving Amplified Epochs')
+                condition = 'NPA'
+                if not blink_removal:
+                    condition = condition + ' (blinks)'
+
+                face_epochs, noise_epochs = save_epochs_as(eeg, condition, events, None, participant, session_name)
                 # plot_evoked(face_epochs, noise_epochs, evoked_ax_amplified, session_idx)
 
                 if args.connectivity:
-                    plot_connectivity(face_epochs, participant, session_name, 'face', 'amplified')
-                    plot_connectivity(noise_epochs, participant, session_name, 'noise', 'amplified')
+                    plot_connectivity(face_epochs, participant, session_name, 'face', condition)
+                    plot_connectivity(noise_epochs, participant, session_name, 'noise', condition)
 
                 del(face_epochs)
                 del(noise_epochs)
@@ -666,11 +698,77 @@ def preprocess(args):
     # fooof_fig.savefig(data_dir + '/results/fooofs.png', dpi=500, bbox_inches='tight')
     # power_fig.savefig(data_dir + '/results/power.png', dpi=500, bbox_inches='tight')
 
-    print('FOOOF r squared', r2s)
-    print(np.mean(r2s))
+    print('FOOOF r squared')
+    print(fooof_r2s)
 
-    print('FOOOF r2 stats:', np.mean(r2s), np.var(r2s))
+    print('NPA r2 stats:', np.mean(filter_r2s), np.var(filter_r2s))
 
+    r2_fig, r2_ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+
+    r2_boxes1 = r2_ax[0].boxplot(fooof_r2s.T)
+    r2_boxes2 = r2_ax[1].boxplot(filter_r2s.T)
+
+    r2_ax[0].set_ylabel('$r^2$', fontsize=16)
+    # r2_ax[1].set_ylabel('$r^2$', fontsize=16)
+
+    r2_ax[0].set_xticklabels(['1', '2', '3', '4'])
+    r2_ax[1].set_xticklabels(['1', '2', '3', '4'])
+
+    r2_ax[0].set_xlabel('Participant', fontsize=16)
+    r2_ax[1].set_xlabel('Participant', fontsize=16)
+
+    for tick in r2_ax[0].xaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+    for tick in r2_ax[1].xaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+
+    for tick in r2_ax[0].yaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+    for tick in r2_ax[1].yaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+
+    r2_ax[0].grid(b=True, which='both')
+    r2_ax[1].grid(b=True, which='both')
+
+    for patch, colour in zip(r2_boxes1['boxes'], colours):
+        patch.set_facecolor(colour)
+
+    for patch, colour in zip(r2_boxes2['boxes'], colours):
+        patch.set_facecolor(colour)
+
+    r2_fig.savefig(data_dir + '/results/r2.png')
+
+    all_slopes = []
+    all_knees = []
+
+    # scatter plot of slope/knee
+
+    for fm in all_fooofs:
+        all_slopes.append(fm.background_params_[2])
+        all_knees.append(fm.background_params_[1])
+
+    slope_knee_fig, slope_knee_ax = plt.subplots(1, 1, figsize=(6,4))
+
+    print('Min/Max slope:', np.min(np.array(all_slopes)), np.max(np.array(all_slopes)))
+    print('Min/Max knee:', np.min(np.array(all_knees)), np.max(np.array(all_knees)))
+
+    slope_knee_ax.scatter(all_slopes[0:9], all_knees[0:9], label='Participant 1')
+    slope_knee_ax.scatter(all_slopes[10:19], all_knees[10:19], marker='d', label='Participant 2')
+    slope_knee_ax.scatter(all_slopes[20:29], all_knees[20:29], marker='x', label='Participant 3')
+    slope_knee_ax.scatter(all_slopes[30:39], all_knees[30:39], marker='+', label='Participant 4')
+
+    slope_knee_ax.set_xlabel('Slope ($\chi$)', fontsize=16)
+    slope_knee_ax.set_ylabel('Knee ($k$)', fontsize=16)
+    slope_knee_ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fancybox=True, shadow=True)
+
+    slope_knee_ax.set_yscale('log')
+
+    for tick in slope_knee_ax.xaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+    for tick in slope_knee_ax.yaxis.get_major_ticks():
+        tick.label.set_fontsize(16)
+
+    slope_knee_fig.savefig(data_dir + '/results/' + 'slope_knee_fig.png', dpi=500, bbox_inches='tight')
 
     for participant_idx, participant in enumerate(participants):
         fg = combine_fooofs(all_fooofs[participant_idx*n_sessions:(participant_idx+1)*n_sessions])
@@ -681,10 +779,11 @@ def preprocess(args):
 
 def plot_grouped_evoked():
 
-    for preproc_type in preproc_types:
-        evoked_fig, evoked_ax = plt.subplots(nrows=3, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 16))
+    evoked_fig, evoked_ax = plt.subplots(nrows=1, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 6))
 
-        for participant_idx, participant in enumerate(participants):
+    for preproc_idx, preproc_type in enumerate(preproc_types):
+
+        for participant_idx, participant in enumerate(participants[0:1]):
             faces, noise = [], []
 
             for session_idx, session in enumerate(sessions):
@@ -693,25 +792,40 @@ def plot_grouped_evoked():
 
             all_faces = concatenate_epochs(faces)
             faces_evoked = all_faces[0:128].average()
-            faces_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[0][participant_idx], window_title=None, selectable=False, show=False)
+            faces_evoked.times = faces_evoked.times - 0.3
 
+            faces_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
 
-            for session_idx, session in enumerate(sessions):
-                noise_epochs = read_epochs(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session + '-epo.fif', proj=False, preload=False, verbose=False)
-                noise.append(noise_epochs)
+            # for session_idx, session in enumerate(sessions):
+            #     noise_epochs = read_epochs(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session + '-epo.fif', proj=False, preload=False, verbose=False)
+            #     noise.append(noise_epochs)
+            #
+            # all_noise = concatenate_epochs(noise)
+            # noise_evoked = all_noise[0:128].average()
+            # noise_evoked.times = noise_evoked.times - 0.3
+            #
+            # # noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[1][participant_idx], window_title=None, selectable=False, show=False)
+            #
+            # evoked_difference = faces_evoked.data - noise_evoked.data
+            # evoked_diff = faces_evoked.copy()
+            # evoked_diff.data = evoked_difference
+            #
+            # evoked_diff.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[preproc_idx][participant_idx], window_title=None, selectable=False, show=False)
 
-            all_noise = concatenate_epochs(noise)
-            noise_evoked = all_noise[0:128].average()
+            evoked_ax[participant_idx][preproc_idx].set_yticks(())
 
-            noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[1][participant_idx], window_title=None, selectable=False, show=False)
+            for tick in evoked_ax[participant_idx][preproc_idx].xaxis.get_major_ticks():
+                tick.label.set_fontsize(20)
 
-            evoked_difference = faces_evoked.data - noise_evoked.data
-            evoked_diff = faces_evoked.copy()
-            evoked_diff.data = evoked_difference
+            evoked_ax[participant_idx][preproc_idx].axvline(x=0, color='k', linestyle='dashed')
+            evoked_ax[participant_idx][preproc_idx].axvline(x=0.17, color='darkmagenta', linestyle='dashed')
+            evoked_ax[participant_idx][preproc_idx].axvline(x=0.3, color='green', linestyle='dashed')
 
-            evoked_diff.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[2][participant_idx], window_title=None, selectable=False, show=False)
+        evoked_ax[participant_idx][preproc_idx].set_title(preproc_type, fontsize=24)
+        evoked_ax[participant_idx][preproc_idx].set_xlabel('Time (s)', fontsize=20)
+        evoked_ax[participant_idx][preproc_idx].set_ylabel('')
 
-        evoked_fig.savefig(data_dir + '/results/evoked_' + preproc_type + '.png', dpi=500, bbox_inches='tight')
+    evoked_fig.savefig(data_dir + '/results/all_evoked.png', dpi=500, bbox_inches='tight')
 
 
 
@@ -720,6 +834,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--save-epochs', action='store_true', default=False, help='save epochs')
     parser.add_argument('--connectivity', action='store_true', default=False, help='compute connectivity using phase lag index')
+    parser.add_argument('--no-blink-removal', action='store_true', default=False, help='disables automatic blink removal')
+    parser.add_argument('--plot-evoked', action='store_true', default=False, help='plot evoked potentials at the end')
 
     args = parser.parse_args()
 
@@ -728,7 +844,9 @@ if __name__ == '__main__':
 
     start_all = time.time()
     preprocess(args)
-    # plot_grouped_evoked()
+
+    if args.plot_evoked:
+        plot_grouped_evoked()
     elapsed = time.time() - start_all
     print('Took', elapsed / 60, 'minutes')
 
