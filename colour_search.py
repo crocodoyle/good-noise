@@ -705,8 +705,8 @@ def preprocess(args):
 
     r2_fig, r2_ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
 
-    r2_boxes1 = r2_ax[0].boxplot(fooof_r2s.T)
-    r2_boxes2 = r2_ax[1].boxplot(filter_r2s.T)
+    r2_boxes1 = r2_ax[0].boxplot(fooof_r2s.T, patch_artist=True)
+    r2_boxes2 = r2_ax[1].boxplot(filter_r2s.T, patch_artist=True)
 
     r2_ax[0].set_ylabel('$r^2$', fontsize=16)
     # r2_ax[1].set_ylabel('$r^2$', fontsize=16)
@@ -727,8 +727,8 @@ def preprocess(args):
     for tick in r2_ax[1].yaxis.get_major_ticks():
         tick.label.set_fontsize(16)
 
-    r2_ax[0].grid(b=True, which='both')
-    r2_ax[1].grid(b=True, which='both')
+    r2_ax[0].yaxis.grid(True)
+    r2_ax[1].yaxis.grid(True)
 
     for patch, colour in zip(r2_boxes1['boxes'], colours):
         patch.set_facecolor(colour)
@@ -770,11 +770,11 @@ def preprocess(args):
 
     slope_knee_fig.savefig(data_dir + '/results/' + 'slope_knee_fig.png', dpi=500, bbox_inches='tight')
 
-    for participant_idx, participant in enumerate(participants):
-        fg = combine_fooofs(all_fooofs[participant_idx*n_sessions:(participant_idx+1)*n_sessions])
-
-        fg.plot(save_fig=True, file_name='FOOOF_stats_' + participant, file_path=data_dir + '/results/')
-        fg.save_report(file_name='FOOOF_report_' + participant, file_path=data_dir + '/results/')
+    # for participant_idx, participant in enumerate(participants):
+    #     fg = combine_fooofs(all_fooofs[participant_idx*n_sessions:(participant_idx+1)*n_sessions])
+    #
+    #     fg.plot(save_fig=True, file_name='FOOOF_stats_' + participant, file_path=data_dir + '/results/')
+    #     fg.save_report(file_name='FOOOF_report_' + participant, file_path=data_dir + '/results/')
 
 
 def plot_grouped_evoked():
