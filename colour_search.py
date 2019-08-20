@@ -112,12 +112,12 @@ def ssp_preprocessing(eeg, participant, session_name, reject):
 
     return eeg
 
-def ica_preprocessing(eeg, filter_eeg, participant, session, eog_channel, reject, f_low, f_high):
+def ica_preprocessing(eeg, participant, session, eog_channel, reject, f_low, f_high):
     try:
         ica = ICA(n_components=0.98, method='extended-infomax')
 
-        # eeg_copy = eeg.copy()
-        # eeg_copy.filter(2, 40, picks=list(range(132)), n_jobs=7, verbose=0)
+        filter_eeg = eeg.copy()
+        filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)
 
         reject_only_eeg = dict(eeg=reject['eeg'])
 
@@ -513,15 +513,14 @@ def preprocess(args):
                 del (noise_epochs)
 
             print('Bandpass Filter')
-            filter_eeg = eeg.copy()
-            filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
-
             if blink_removal:
                 print('ICA')
                 eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
                 eeg.set_eeg_reference('average', projection=True, verbose=0)
                 eeg.apply_proj()
 
+            filter_eeg = eeg.copy()
+            filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
 
             if save_epochs:
                 print('Saving Epochs')
@@ -543,7 +542,7 @@ def preprocess(args):
             if save_epochs:
                 print('Highpass Filter')
                 filter_eeg = eeg.copy()
-                filter_eeg.filter(1, None, picks=list(range(132)), n_jobs=7, verbose=0)
+                filter_eeg = filter_eeg.filter(1, None, picks=list(range(132)), n_jobs=7, verbose=0)
 
                 condition = 'Highpass'
                 if not blink_removal:
@@ -566,7 +565,7 @@ def preprocess(args):
 
             # eeg.pick_channels(channel_names[0:128])
             # eeg.plot_psd_topo(tmin=100, dB=True, show=False, block=False, n_jobs=1, axes=topo_axes[session_idx][participant_idx], verbose=0)
-            eeg.pick_channels(channel_names[0:132])
+            eeg = eeg.pick_channels(channel_names[0:132])
 
             print('Computing power spectrum for entire session...')
             start_time = time.time()
@@ -574,16 +573,6 @@ def preprocess(args):
             print('Took', (time.time() - start_time) // 60, 'mins')
 
             print('Frequencies shape:', freqs.shape, 'Power spectrum distribution shape:', psds.shape)
-            #
-            # channel_rejected_eeg = eeg.copy()
-            # channel_rejected_eeg, n_bads = fooof_channel_rejection(channel_rejected_eeg, psds, freqs, f_low, f_high, participant, session_name)
-            # print('Bad channels:', n_bads)
-            #
-            # number_bad_channels.append(n_bads)
-            #
-            # face_epochs, noise_epochs = save_epochs_as(channel_rejected_eeg, 'bads2good', events, reject, participant, session_name)
-            # plot_evoked(face_epochs, noise_epochs, evoked_axes['bads2good'], session_idx)
-            #
             # psds, freqs = psd_welch(channel_rejected_eeg, fmin=0, fmax=n_freqs, tmin=500, tmax=2000, n_fft=2048, n_overlap=512, n_jobs=7)
 
             print('Fitting FOOOF...')
@@ -701,6 +690,9 @@ def preprocess(args):
     print('FOOOF r squared')
     print(fooof_r2s)
 
+    print('NPA r squared')
+    print(filter_r2s)
+
     print('NPA r2 stats:', np.mean(filter_r2s), np.var(filter_r2s))
 
     r2_fig, r2_ax = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
@@ -747,7 +739,7 @@ def preprocess(args):
         all_slopes.append(fm.background_params_[2])
         all_knees.append(fm.background_params_[1])
 
-    slope_knee_fig, slope_knee_ax = plt.subplots(1, 1, figsize=(6,4))
+    slope_knee_fig, slope_knee_ax = plt.subplots(1, 1, figsize=(6, 4))
 
     print('Min/Max slope:', np.min(np.array(all_slopes)), np.max(np.array(all_slopes)))
     print('Min/Max knee:', np.min(np.array(all_knees)), np.max(np.array(all_knees)))
@@ -779,11 +771,10 @@ def preprocess(args):
 
 def plot_grouped_evoked():
 
-    evoked_fig, evoked_ax = plt.subplots(nrows=1, ncols=4, sharex=True, sharey=False, squeeze=False, figsize=(24, 6))
+    for participant_idx, participant in enumerate(participants):
+        evoked_fig, evoked_ax = plt.subplots(nrows=1, ncols=4, sharex=True, sharey=True, squeeze=False, figsize=(24, 6))
 
-    for preproc_idx, preproc_type in enumerate(preproc_types):
-
-        for participant_idx, participant in enumerate(participants[0:1]):
+        for preproc_idx, preproc_type in enumerate(preproc_types):
             faces, noise = [], []
 
             for session_idx, session in enumerate(sessions):
@@ -791,41 +782,46 @@ def plot_grouped_evoked():
                 faces.append(face_epochs)
 
             all_faces = concatenate_epochs(faces)
-            faces_evoked = all_faces[0:128].average()
+            faces_evoked = all_faces.average()
+            faces_evoked = faces_evoked.detrend()
             faces_evoked.times = faces_evoked.times - 0.3
 
-            faces_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
+            # faces_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
 
-            # for session_idx, session in enumerate(sessions):
-            #     noise_epochs = read_epochs(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session + '-epo.fif', proj=False, preload=False, verbose=False)
-            #     noise.append(noise_epochs)
-            #
-            # all_noise = concatenate_epochs(noise)
-            # noise_evoked = all_noise[0:128].average()
-            # noise_evoked.times = noise_evoked.times - 0.3
-            #
-            # # noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[1][participant_idx], window_title=None, selectable=False, show=False)
-            #
-            # evoked_difference = faces_evoked.data - noise_evoked.data
-            # evoked_diff = faces_evoked.copy()
-            # evoked_diff.data = evoked_difference
-            #
-            # evoked_diff.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[preproc_idx][participant_idx], window_title=None, selectable=False, show=False)
+            for session_idx, session in enumerate(sessions):
+                noise_epochs = read_epochs(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session + '-epo.fif', proj=False, preload=False, verbose=False)
+                noise.append(noise_epochs)
 
-            evoked_ax[participant_idx][preproc_idx].set_yticks(())
+            all_noise = concatenate_epochs(noise)
+            noise_evoked = all_noise.average()
+            noise_evoked = noise_evoked.detrend()
+            noise_evoked.times = noise_evoked.times - 0.3
 
-            for tick in evoked_ax[participant_idx][preproc_idx].xaxis.get_major_ticks():
+            # noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
+
+            evoked_difference = faces_evoked.data - noise_evoked.data
+
+            if preproc_idx == 0:
+                max_npa = np.max(evoked_difference)
+            max_other = np.max(evoked_difference)
+
+            evoked_diff = faces_evoked.copy()
+            evoked_diff.data = evoked_difference * (max_npa / max_other)
+
+            evoked_diff.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[0][preproc_idx], window_title=None, selectable=False, show=False)
+
+            for tick in evoked_ax[0][preproc_idx].xaxis.get_major_ticks():
                 tick.label.set_fontsize(20)
 
-            evoked_ax[participant_idx][preproc_idx].axvline(x=0, color='k', linestyle='dashed')
-            evoked_ax[participant_idx][preproc_idx].axvline(x=0.17, color='darkmagenta', linestyle='dashed')
-            evoked_ax[participant_idx][preproc_idx].axvline(x=0.3, color='green', linestyle='dashed')
+            evoked_ax[0][preproc_idx].axvline(x=0, color='k', linestyle='dashed')
+            evoked_ax[0][preproc_idx].axvline(x=0.17, color='darkmagenta', linestyle='dashed')
+            evoked_ax[0][preproc_idx].axvline(x=0.3, color='green', linestyle='dashed')
 
-        evoked_ax[participant_idx][preproc_idx].set_title(preproc_type, fontsize=24)
-        evoked_ax[participant_idx][preproc_idx].set_xlabel('Time (s)', fontsize=20)
-        evoked_ax[participant_idx][preproc_idx].set_ylabel('')
+            evoked_ax[0][preproc_idx].set_title(preproc_type, fontsize=24)
+            evoked_ax[0][preproc_idx].set_xlabel('Time (s)', fontsize=20)
+            evoked_ax[0][preproc_idx].set_ylabel('Voltage ($\mu$V)', fontsize=20)
 
-    evoked_fig.savefig(data_dir + '/results/all_evoked.png', dpi=500, bbox_inches='tight')
+        evoked_fig.savefig(data_dir + '/results/all_evoked_' + participant + '.png', dpi=500)
 
 
 
