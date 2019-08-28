@@ -154,7 +154,7 @@ def process_subject(data_file, subject, session):
     # amplified_time_series = amp.amplify(eeg.get_data(picks=eeg_ch_ints))
     # amplified_eeg = eeg.copy()
 
-    eeg.apply_function(amp.amplify, picks=eeg_ch_ints, n_jobs=-1)
+    eeg = eeg.apply_function(amp.amplify, picks=eeg_ch_ints, n_jobs=-1)
 
     #create new MNE Raw object with amplified EEG signal
     # eeg_ch_names = [eeg.ch_names[i] for i in eeg_ch_ints]
