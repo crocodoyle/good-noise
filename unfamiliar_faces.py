@@ -9,7 +9,7 @@ import os
 from glob import glob
 
 from mne.time_frequency import psd_welch, psd_multitaper
-from mne import Epochs
+from mne import Epochs, concatenate_epochs
 
 from npa.utils import blink_removal
 from npa import NPA
@@ -17,10 +17,17 @@ from npa import NPA
 
 # data_file = 'C:/Users/doyle/Desktop/sub-01_ses-meg_task-facerecognition_run-01_meg.fif'
 
-# data_dir = '/data1/users/adoyle/ds117/'
-data_dir = 'D:/ds000117/'
+data_dir = '/data1/users/adoyle/ds117/'
+# data_dir = 'D:/ds000117/'
 
-subjects = ['sub-{:02}'.format(i) for i in range(1, 14)]
+subjects = ['sub-{:02}'.format(i) for i in range(1, 10)]
+sessions = dict()
+
+for participant_idx, participant in enumerate(subjects):
+    sessions[participant] = []
+    for run_idx, filename in enumerate(glob(data_dir + participant + 'ses-meg/meg/' + participant + '_ses-meg_task-facerecognition_run-*_meg.fif')):
+        sessions[participant].append(filename[-10:-9])
+
 preproc_types = ['NPA', 'Bandpass', 'Highpass', 'Raw']
 
 print('Subjects:', subjects)
@@ -32,7 +39,6 @@ plot_colours = ['blue', 'red', 'green', 'darkorange']
 
 
 def remove_duplicate_events(events):
-    print('first event', events[0])
     new_events = []
     new_events.append(events[0])
     for event in events[1:]:
@@ -47,26 +53,53 @@ def save_epochs_as(eeg, preproc_type, events, participant, session_name):
     familiar_events = mne.pick_events(events, include=[5, 6, 7])
     familiar_events = remove_duplicate_events(familiar_events)
 
-    familiar_epochs = Epochs(eeg, familiar_events, tmin=-0.3, tmax=1, proj=True, detrend=1, preload=False, verbose=0).drop_bad()
+    familiar_epochs = Epochs(eeg, familiar_events, tmin=-0.3, tmax=1, proj=True, detrend=0, preload=False, verbose=0).drop_bad()
     familiar_epochs.save(data_dir + '/epochs/' + preproc_type + '/familiar_' + participant + '_' + session_name + '-epo.fif', verbose=0)
 
     unfamiliar_events = mne.pick_events(events, include=[13, 14, 15])
     unfamiliar_events = remove_duplicate_events(unfamiliar_events)
 
-    unfamiliar_epochs = Epochs(eeg, unfamiliar_events, tmin=-0.3, tmax=1, proj=True, detrend=1, preload=False, verbose=0).drop_bad()
+    unfamiliar_epochs = Epochs(eeg, unfamiliar_events, tmin=-0.3, tmax=1, proj=True, detrend=0, preload=False, verbose=0).drop_bad()
     unfamiliar_epochs.save(data_dir + '/epochs/' + preproc_type + '/unfamiliar_' + participant + '_' + session_name + '-epo.fif', verbose=0)
 
     noise_events = mne.pick_events(events, include=[17, 18, 19])
     noise_events = remove_duplicate_events(noise_events)
 
-    noise_epochs = Epochs(eeg, noise_events, tmin=-0.3, tmax=1, proj=True, detrend=1, preload=False, verbose=0).drop_bad()
+    noise_epochs = Epochs(eeg, noise_events, tmin=-0.3, tmax=1, proj=True, detrend=0, preload=False, verbose=0).drop_bad()
     noise_epochs.save(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '_' + session_name + '-epo.fif', verbose=0)
 
     return familiar_epochs, unfamiliar_epochs, noise_epochs
 
+def load_montage(montage_file):
+
+    channels = []
+    pos = []
+
+    with open(montage_file, 'r') as f:
+        for line in f:
+            if len(line) > 3:
+                tokens = line.split(' ')
+
+                if 'EEG' in tokens[0]:
+                    channels.append(tokens[0])
+
+                    x = float(tokens[1])
+                    y = float(tokens[2])
+                    z = float(tokens[3])
+
+                    pos.append([x, y, z])
+
+    montage = mne.channels.Montage(np.asarray(pos), channels,'standard_1020', list(range(len(channels))))
+
+    return montage
 
 def process_subject(data_file, subject, session):
+
+    montage_file = data_dir + '/' + subject + '/ses-meg/meg/' + subject + '_ses-meg_headshape.pos'
+    montage = load_montage(montage_file)
+
     meg = mne.io.read_raw_fif(data_file, preload=True, verbose=0)
+    # meg.set_montage(montage)
 
     events = mne.find_events(meg, shortest_event=0, stim_channel=['STI101'], verbose=0)
     # 17,18,19 are noise
@@ -105,28 +138,34 @@ def process_subject(data_file, subject, session):
 
     psds, freqs = psd_multitaper(eeg, picks=eeg_ch_ints, n_jobs=-1)
 
-    fooof = FOOOF(peak_width_limits=[2, 9], aperiodic_mode='knee')
-    fooof.fit(freqs, np.mean(psds, axis=0), freq_range=[0.1, 45])
+    fooof = FOOOF(peak_width_limits=[2, 12], aperiodic_mode='knee')
+    fooof.fit(freqs, np.mean(psds, axis=0), freq_range=[1, 45])
+    fooof.plot(save_fig=True, file_name=subject+'-'+session, file_path=data_dir + '/results/')
 
     amp = NPA(fooof, sampling_frequency)
     amp.fit_filters(log_approx_levels=5, peak_mode='sharp', n_peak_taps=256)
 
-    amp.plot_peak_filters()
-    # amp.plot_log_filters()
+    peak_fig = amp.plot_peak_filters()
+    peak_fig.savefig(data_dir + '/results/' + subject + '-' + session + '.png')
+
+    log_fig = amp.plot_log_filters()
+    log_fig.savefig(data_dir + '/results/' + subject + '-' + session + '.png')
 
     # amplified_time_series = amp.amplify(eeg.get_data(picks=eeg_ch_ints))
-    amplified_eeg = eeg.apply_function(amp.amplify2, picks=eeg_ch_ints, n_jobs=-1)
+    # amplified_eeg = eeg.copy()
 
-    # create new MNE Raw object with amplified EEG signal
+    eeg.apply_function(amp.amplify, picks=eeg_ch_ints, n_jobs=-1)
+
+    #create new MNE Raw object with amplified EEG signal
     # eeg_ch_names = [eeg.ch_names[i] for i in eeg_ch_ints]
     # amp_info = mne.create_info(eeg_ch_names, sampling_frequency, ch_types='eeg')
     # amplified_eeg = mne.io.RawArray(np.float64(amplified_time_series), amp_info)
+    # amplified_eeg.set_montage(montage)
 
-    amplified_eeg.plot_psd()
+    f = eeg.plot_psd()
+    f.savefig(data_dir + '/results/psd.png')
 
-    print(amplified_eeg)
-
-    save_epochs_as(amplified_eeg, 'NPA', events, subject, session)
+    save_epochs_as(eeg, 'NPA', events, subject, session)
 
     # calculate and plot PSD
     # amp_psds, amp_freqs = psd_welch(amplified_eeg, 0, 45, n_jobs=-1)
@@ -140,10 +179,10 @@ def process_subject(data_file, subject, session):
     # plt.ylabel('Power')
     # plt.legend()
 
-from keras.models import Sequential, Model
-from keras.layers import CuDNNLSTM, LSTM, Flatten, BatchNormalization, Dense, Dropout, TimeDistributed, Reshape, ConvLSTM2D, Conv3D, AveragePooling1D, Average, Input
+from keras.models import Model
+from keras.layers import LSTM, Flatten, Dense, Input
 
-from keras.constraints import max_norm, UnitNorm
+from keras.constraints import max_norm
 from keras.optimizers import Adam, SGD
 from keras.utils import Sequence, to_categorical
 
@@ -186,7 +225,7 @@ def merge_all_epochs(preproc_type):
             unfamiliar_epochs = mne.read_epochs(filename, proj=False, preload=False, verbose=0)
             n_unfamiliar_epochs += len(unfamiliar_epochs)
 
-        for filename in glob(data_dir + '/epochs/' + preproc_type + '/unfamiliar_' + participant + '*' + '-epo.fif'):
+        for filename in glob(data_dir + '/epochs/' + preproc_type + '/noise_' + participant + '*' + '-epo.fif'):
             noise_epochs = mne.read_epochs(filename, proj=False, preload=False, verbose=0)
             n_noise_epochs += len(noise_epochs)
 
@@ -237,27 +276,81 @@ def merge_all_epochs(preproc_type):
 
     f.close()
 
-    return f
+
+def plot_grouped_evoked():
+
+    for participant_idx, participant in enumerate(subjects):
+        evoked_fig, evoked_ax = plt.subplots(nrows=1, ncols=len(subjects), sharex=True, sharey=True, squeeze=False, figsize=(24, 6))
+
+        for preproc_idx, preproc_type in enumerate(preproc_types):
+            familiar, unfamiliar, noise = [], [], []
+
+            for filename in glob(data_dir + '/epochs/' + preproc_type + '/familiar_' + participant + '*' + '-epo.fif'):
+                familiar_epochs = mne.read_epochs(filename, proj=False, preload=False, verbose=False)
+                familiar.append(familiar_epochs)
+
+            all_familiar = concatenate_epochs(familiar)
+            familiar_evoked = all_familiar.average()
+            familiar_evoked = familiar_evoked.detrend()
+            familiar_evoked.times = familiar_evoked.times - 0.3
+
+            # faces_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
+
+            for filename in glob(data_dir + '/epochs/' + preproc_type + '/unfamiliar_' + participant + '*' + '-epo.fif'):
+                unfamiliar_epochs = mne.read_epochs(filename, proj=False, preload=False, verbose=False)
+                unfamiliar.append(unfamiliar_epochs)
+
+            all_unfamiliar = concatenate_epochs(unfamiliar)
+            unfamiliar_evoked = all_unfamiliar.average()
+            unfamiliar_evoked = unfamiliar_evoked.detrend()
+            unfamiliar_evoked.times = unfamiliar_evoked.times - 0.3
+
+            # noise_evoked.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[participant_idx][preproc_idx], window_title=None, selectable=False, show=False)
+
+            evoked_difference = familiar_evoked.data - unfamiliar_evoked.data
+
+            if preproc_idx == 0:
+                max_npa = np.max(evoked_difference)
+            max_other = np.max(evoked_difference)
+
+            evoked_diff = familiar_evoked.copy()
+            evoked_diff.data = evoked_difference * (max_npa / max_other)
+
+            evoked_diff.plot(spatial_colors=True, time_unit='s', gfp=False, axes=evoked_ax[0][preproc_idx], window_title=None, selectable=False, show=False)
+
+            for tick in evoked_ax[0][preproc_idx].xaxis.get_major_ticks():
+                tick.label.set_fontsize(20)
+
+            evoked_ax[0][preproc_idx].axvline(x=0, color='k', linestyle='dashed')
+            evoked_ax[0][preproc_idx].axvline(x=0.17, color='darkmagenta', linestyle='dashed')
+            evoked_ax[0][preproc_idx].axvline(x=0.3, color='green', linestyle='dashed')
+
+            evoked_ax[0][preproc_idx].set_title(preproc_type, fontsize=24)
+            evoked_ax[0][preproc_idx].set_xlabel('Time (s)', fontsize=20)
+            evoked_ax[0][preproc_idx].set_ylabel('Voltage ($\mu$V)', fontsize=20)
+
+        evoked_fig.savefig(data_dir + '/results/all_evoked_' + participant + '.png', dpi=500)
 
 
 def lstm_model(n_channels, n_timepoints):
     inputs = Input(shape=(n_timepoints, n_channels))
-    attention_mul = LSTM(4, recurrent_constraint=max_norm(2.), return_sequences=True)(inputs)
+    attention_mul = LSTM(128, recurrent_constraint=max_norm(2.), return_sequences=True)(inputs)
 
     flat = Flatten()(attention_mul)
     output = Dense(3, activation='softmax')(flat)
 
     model = Model(input=[inputs], output=output)
 
-    # optimizer = Adam(lr=0.0002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-    optimizer = SGD(lr=0.0002)
+    optimizer = Adam(lr=0.002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    # optimizer = SGD(lr=0.0002)
 
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
     return model
 
+
 def train():
-    n_epochs = 5
+    n_epochs = 25
     n_folds = len(subjects)
     n_preproc_types = len(preproc_types)
 
@@ -296,7 +389,7 @@ def train():
                 eeg_seq_train = EEGEpochSequence(f, train_indices, batch_size)
                 eeg_seq_test = EEGEpochSequence(f, test_indices, batch_size)
 
-                history = model.fit_generator(eeg_seq_train, epochs=n_epochs, steps_per_epoch=3, shuffle=True, use_multiprocessing=False)
+                history = model.fit_generator(eeg_seq_train, epochs=n_epochs, steps_per_epoch=train_indices.shape[0] // batch_size, shuffle=True, use_multiprocessing=False)
 
                 metrics = model.evaluate_generator(eeg_seq_test)
                 print(model.metrics_names, metrics)
@@ -349,16 +442,18 @@ def train():
 
 
 if __name__ == '__main__':
-    # for subject_idx, subject in enumerate(subjects):
-    #     subject_dir = data_dir + '/' + subject + '/ses-meg/meg/'
-    #
-    #     for run_idx, run_file in enumerate(glob(subject_dir + subject + '_ses-meg_task-facerecognition_run-*_meg.fif')):
-    #         process_subject(run_file, subject, 'session-' + str(run_idx + 1))
+    for subject_idx, subject in enumerate(subjects):
+       subject_dir = data_dir + '/' + subject + '/ses-meg/meg/'
+
+       for run_idx, run_file in enumerate(glob(subject_dir + subject + '_ses-meg_task-facerecognition_run-*_meg.fif')):
+           process_subject(run_file, subject, 'session-' + str(run_idx + 1))
+
+    plot_grouped_evoked()
 
     os.makedirs(data_dir + '/results/', exist_ok=True)
 
-    # for preproc in preproc_types:
-    #     merge_all_epochs(preproc)
+    for preproc in preproc_types:
+        merge_all_epochs(preproc)
 
     train()
 
