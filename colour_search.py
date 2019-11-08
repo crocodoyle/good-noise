@@ -47,7 +47,7 @@ preproc_types = ['NPA', 'Bandpass', 'Highpass', 'Raw']
 
 channels_file = 'Glasgow_BioSemi_132.ced'
 
-data_dir = '/data1/users/adoyle/eeg_test_retest/'
+data_dir = 'D:/brains/eeg_test_retest/'
 
 n_channels = 132
 channel_names = channel_names[0:n_channels]
@@ -112,12 +112,12 @@ def ssp_preprocessing(eeg, participant, session_name, reject):
 
     return eeg
 
-def ica_preprocessing(eeg, participant, session, eog_channel, reject, f_low, f_high):
+def ica_preprocessing(eeg, filter_eeg, participant, session, eog_channel, reject, f_low, f_high):
     try:
         ica = ICA(n_components=0.98, method='extended-infomax')
 
-        filter_eeg = eeg.copy()
-        filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)
+        # filter_eeg = eeg.copy()
+        # filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)
 
         reject_only_eeg = dict(eeg=reject['eeg'])
 
@@ -495,10 +495,20 @@ def preprocess(args):
             eeg = read_raw_edf(filename, montage=montage, eog=eog_channels, preload=True, verbose=0)
             # mne.set_eeg_reference(eeg, ref_channels='average', copy=True, projection=False)
 
-            events = mne.find_events(eeg, stim_channel='STI 014', verbose=0)
+            events = mne.find_events(eeg, verbose=0)
             reject = dict(eeg=80e-5, eog=60e-4)   # manually tuned argh
 
             eeg.pick_channels(channel_names)
+
+            filter_eeg = eeg.copy()
+            filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
+
+            print('Bandpass Filter')
+            if blink_removal:
+                print('ICA')
+                eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
+                eeg.set_eeg_reference('average', projection=True, verbose=0)
+                eeg.apply_proj()
 
             if save_epochs:
                 print('Saving Epochs')
@@ -511,16 +521,6 @@ def preprocess(args):
 
                 del (face_epochs)
                 del (noise_epochs)
-
-            print('Bandpass Filter')
-            if blink_removal:
-                print('ICA')
-                eeg = ica_preprocessing(eeg, filter_eeg, participant, session_name, eog_channels[0], reject, f_low, f_high)
-                eeg.set_eeg_reference('average', projection=True, verbose=0)
-                eeg.apply_proj()
-
-            filter_eeg = eeg.copy()
-            filter_eeg = filter_eeg.filter(1, 40, picks=list(range(132)), n_jobs=7, verbose=0)          # band-pass
 
             if save_epochs:
                 print('Saving Epochs')
