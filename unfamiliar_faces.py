@@ -17,8 +17,8 @@ from npa import NPA
 
 # data_file = 'C:/Users/doyle/Desktop/sub-01_ses-meg_task-facerecognition_run-01_meg.fif'
 
-data_dir = '/data1/users/adoyle/ds117/'
-# data_dir = 'D:/ds000117/'
+# data_dir = '/data1/users/adoyle/ds117/'
+data_dir = 'E:/ds000117/'
 
 subjects = ['sub-{:02}'.format(i) for i in range(1, 10)]
 sessions = dict()
